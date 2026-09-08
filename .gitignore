@@ -1,0 +1,3 @@
+# Generated native module build outputs
+**/build/
+**/.gradle/

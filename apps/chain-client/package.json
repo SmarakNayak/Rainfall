@@ -1,0 +1,7 @@
+{
+  "name": "rainfall-chain-client",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node server.js", "test": "node --test", "demo": "node demo.js" }
+}

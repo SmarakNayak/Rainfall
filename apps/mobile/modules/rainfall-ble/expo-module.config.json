@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["network.rainfall.ble.RainfallBleModule"]
+  }
+}
