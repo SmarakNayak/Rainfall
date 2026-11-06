@@ -1,0 +1,3 @@
+[package]
+name = "rainfall-cli"
+edition = "2024"
