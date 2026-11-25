@@ -3,7 +3,7 @@
 
 use ed25519_dalek::VerifyingKey;
 
-use crate::{crypto::KeyType::Ed25519, encoding::DecodeError};
+use crate::encoding::DecodeError;
 
 #[repr(u8)]
 pub enum KeyType {
@@ -23,7 +23,7 @@ impl KeyType {
         }
     }
 }
-
+#[derive(Debug, PartialEq)]
 pub enum PublicKey {
     Ed25519(ed25519_dalek::VerifyingKey),
 }
@@ -32,7 +32,7 @@ impl PublicKey {
     pub fn encode(&self, out: &mut Vec<u8>) {
         match self {
             PublicKey::Ed25519(public_key) => {
-                out.push(Ed25519.tag());
+                out.push(KeyType::Ed25519.tag());
                 out.extend_from_slice(public_key.as_bytes());
             }
         }
@@ -53,7 +53,7 @@ impl PublicKey {
                 // private key has several valid public keys. Requiring torsion-free
                 // keys means every client reaches the same verdict.
                 if verifying_key.is_weak() || !verifying_key.to_edwards().is_torsion_free() {
-                    return Err(DecodeError::WeakKey);
+                    return Err(DecodeError::BadKey);
                 }
                 Ok((PublicKey::Ed25519(verifying_key), rest))
             }
@@ -85,5 +85,118 @@ impl KeyPair {
             }
         };
         key_pair
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod key_type {
+        use super::*;
+        use borsh::BorshSerialize;
+
+        #[derive(BorshSerialize)]
+        #[borsh(use_discriminant = true)]
+        enum BorschKeyType {
+            Ed25519 = 0,
+        }
+
+        #[test]
+        fn encode_matches_borsh() {
+            let borsh_bytes = borsh::to_vec(&BorschKeyType::Ed25519).unwrap();
+            assert_eq!(vec![KeyType::Ed25519.tag()], borsh_bytes);
+        }
+
+        #[test]
+        fn ed25519_tag_is_zero() {
+            assert_eq!(KeyType::Ed25519.tag(), 0);
+            assert!(matches!(KeyType::from_tag(0), Ok(KeyType::Ed25519)));
+        }
+
+        #[test]
+        fn unknown_tags_are_unsupported() {
+            for tag in 1..=u8::MAX {
+                assert!(
+                    matches!(KeyType::from_tag(tag), Err(DecodeError::Unsupported)),
+                    "tag {tag}"
+                );
+            }
+        }
+
+        #[test]
+        fn reserved_tag_is_unsupported() {
+            assert!(matches!(
+                KeyType::from_tag(0xFF),
+                Err(DecodeError::Unsupported)
+            ));
+        }
+    }
+
+    mod public_key {
+        use super::*;
+        /// Fixed seed so failures reproduce. A key derived from a seed is always
+        /// in the prime-order subgroup, so it passes the strict checks.
+        fn test_key() -> PublicKey {
+            let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+            PublicKey::Ed25519(signing_key.verifying_key())
+        }
+
+        /// The Ed25519 public key for the seed [1; 32].
+        const TEST_KEY_BYTES: [u8; 32] = [
+            138, 136, 227, 221, 116, 9, 241, 149, 253, 82, 219, 45, 60, 186, 93, 114, 202, 103, 9,
+            191, 29, 148, 18, 27, 243, 116, 136, 1, 180, 15, 111, 92,
+        ];
+
+        /// The `PublicKey` layout written as a type Borsh can derive: an enum is a
+        /// u8 variant index followed by its fields, and a fixed array has no
+        /// length prefix.
+        #[derive(borsh::BorshSerialize)]
+        enum BorshPublicKey {
+            Ed25519([u8; 32]),
+        }
+
+        #[test]
+        fn encode_matches_borsh() {
+            let mut bytes = Vec::new();
+            test_key().encode(&mut bytes);
+            let borsh_bytes = borsh::to_vec(&BorshPublicKey::Ed25519(TEST_KEY_BYTES)).unwrap();
+            assert_eq!(bytes, borsh_bytes);
+        }
+
+        #[test]
+        fn encode() {
+            let mut bytes = Vec::new();
+            test_key().encode(&mut bytes);
+            let mut expected = vec![0];
+            expected.extend_from_slice(&TEST_KEY_BYTES);
+            assert_eq!(bytes, expected);
+        }
+
+        #[test]
+        fn decode() {
+            let mut key_bytes = vec![0]; //ed25519 tag is 0
+            key_bytes.extend_from_slice(&TEST_KEY_BYTES);
+            let Ok((decoded, rest)) = PublicKey::decode(&key_bytes) else {
+                panic!("decode failed");
+            };
+            assert!(rest.is_empty());
+            assert_eq!(decoded, test_key());
+        }
+
+        #[test]
+        fn round_trip() {
+            let mut bytes = Vec::new();
+            test_key().encode(&mut bytes);
+
+            let Ok((decoded, rest)) = PublicKey::decode(&bytes) else {
+                panic!("decode failed");
+            };
+            assert!(rest.is_empty());
+
+            let mut reencoded = Vec::new();
+            decoded.encode(&mut reencoded);
+            assert_eq!(reencoded, bytes);
+        }
     }
 }
