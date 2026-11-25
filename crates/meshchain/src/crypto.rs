@@ -198,5 +198,106 @@ mod tests {
             decoded.encode(&mut reencoded);
             assert_eq!(reencoded, bytes);
         }
+
+        /// Tag byte followed by `rest`.
+        fn tagged(tag: u8, rest: &[u8]) -> Vec<u8> {
+            let mut bytes = vec![tag];
+            bytes.extend_from_slice(rest);
+            bytes
+        }
+
+        /// 32 bytes encoding y = n, with x's sign bit clear.
+        fn point_with_y(n: u8) -> [u8; 32] {
+            let mut bytes = [0; 32];
+            bytes[0] = n;
+            bytes
+        }
+
+        #[test]
+        fn decode_returns_trailing_bytes() {
+            let mut bytes = tagged(0, &TEST_KEY_BYTES);
+            bytes.push(0xAB);
+            let Ok((decoded, rest)) = PublicKey::decode(&bytes) else {
+                panic!("decode failed");
+            };
+            assert_eq!(decoded, test_key());
+            assert_eq!(rest, [0xAB]);
+        }
+
+        #[test]
+        fn truncated_input_is_malformed() {
+            for input in [&[][..], &[0], &tagged(0, &TEST_KEY_BYTES[..31])] {
+                assert!(
+                    matches!(PublicKey::decode(input), Err(DecodeError::Malformed)),
+                    "{} bytes",
+                    input.len()
+                );
+            }
+        }
+
+        /// Checks that decode passes on from_tag's error rather than turning it
+        /// into Malformed. The key_type tests cover every tag value.
+        #[test]
+        fn unknown_tag_is_unsupported() {
+            let input = tagged(1, &TEST_KEY_BYTES);
+            assert!(matches!(
+                PublicKey::decode(&input),
+                Err(DecodeError::Unsupported)
+            ));
+        }
+
+        /// No x satisfies the curve equation for y = 2.
+        #[test]
+        fn invalid_point_is_malformed() {
+            assert!(matches!(
+                PublicKey::decode(&tagged(0, &point_with_y(2))),
+                Err(DecodeError::Malformed)
+            ));
+        }
+
+        /// y = 0 is a point of order 4, and y = 1 is the identity.
+        #[test]
+        fn small_order_keys_are_bad() {
+            for n in [0, 1] {
+                assert!(
+                    matches!(
+                        PublicKey::decode(&tagged(0, &point_with_y(n))),
+                        Err(DecodeError::BadKey)
+                    ),
+                    "y = {n}"
+                );
+            }
+        }
+
+        #[test]
+        fn torsion_key_is_bad() {
+            // Precondition: a valid point that is not small-order, so this reaches
+            // the torsion check rather than is_weak.
+            let key = VerifyingKey::from_bytes(&point_with_y(3)).unwrap();
+            assert!(!key.is_weak());
+
+            assert!(matches!(
+                PublicKey::decode(&tagged(0, &point_with_y(3))),
+                Err(DecodeError::BadKey)
+            ));
+        }
+
+        /// p = 2^255 - 19, little-endian. The values p..p+18 still fit in 255
+        /// bits, so they are alternative spellings of y = 0..18. Accepting one
+        /// would give a key two encodings, and so two genesis ids.
+        #[test]
+        fn non_canonical_keys_are_rejected() {
+            for sign in [0x00, 0x80] {
+                for d in 0..19u8 {
+                    let mut key = [0xFF; 32];
+                    key[0] = 0xED + d; // p's low byte is 0xED, so this never carries
+                    key[31] = 0x7F | sign; // the top bit is x's sign, not part of y
+                    assert!(
+                        PublicKey::decode(&tagged(0, &key)).is_err(),
+                        "y = p + {d}, sign {sign:#x}"
+                    );
+                }
+            }
+        }
     }
 }
