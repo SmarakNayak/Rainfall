@@ -47,7 +47,12 @@ impl PublicKey {
                     .ok_or(DecodeError::Malformed)?;
                 let verifying_key =
                     VerifyingKey::from_bytes(key_bytes).map_err(|_| DecodeError::Malformed)?;
-                if verifying_key.is_weak() {
+                // Reject small-order keys, for which anyone can forge signatures, and
+                // keys with a torsion component. With torsion, cofactored and
+                // cofactorless verifiers can disagree on the same signature, and one
+                // private key has several valid public keys. Requiring torsion-free
+                // keys means every client reaches the same verdict.
+                if verifying_key.is_weak() || !verifying_key.to_edwards().is_torsion_free() {
                     return Err(DecodeError::WeakKey);
                 }
                 Ok((PublicKey::Ed25519(verifying_key), rest))
