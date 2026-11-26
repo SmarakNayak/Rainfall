@@ -13,3 +13,12 @@ pub enum DecodeError {
     /// A small-order key, or one with a torsion component.
     BadKey,
 }
+
+/// Why a value couldn't be encoded.
+#[derive(Debug)]
+pub enum EncodeError {
+    /// A version this client doesn't know how to encode.
+    Unsupported,
+    /// A length doesn't fit in its u32 prefix.
+    TooLarge,
+}
