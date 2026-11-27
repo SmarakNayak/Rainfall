@@ -7,4 +7,6 @@ ed25519-dalek = "3"
 getrandom = "0.4"
 
 [dev-dependencies]
+assert_matches = "1"
 borsh = { version = "1", features = ["derive"] }
+hex = "0.4"

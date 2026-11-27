@@ -1,5 +1,6 @@
 use crate::encoding::{DecodeError, EncodeError};
 
+#[derive(Debug, PartialEq)]
 pub struct Action {
     /// Crypto suite: how to hash and verify. 255 is reserved.
     pub version: u8,
@@ -8,6 +9,14 @@ pub struct Action {
 }
 
 impl Action {
+    pub fn new(version: u8, parent: Option<[u8; 32]>, payload: Vec<u8>) -> Self {
+        Action {
+            version,
+            parent,
+            payload,
+        }
+    }
+
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         // Check before writing anything, so an error leaves `out` untouched.
         // The layout below is version 0's; other versions would need their own.
@@ -93,4 +102,157 @@ pub fn get_genesis_id(genesis: &Action) -> Result<i128, &'static str> {
     h.write_u8(genesis.version);
     h.write(&genesis.payload);
     Ok(h.finish() as i128)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
+    use borsh::BorshSerialize;
+
+    const PARENT: [u8; 32] = [7; 32];
+
+    #[derive(BorshSerialize)]
+    struct BorshAction {
+        version: u8,
+        parent: Option<[u8; 32]>,
+        payload: Vec<u8>,
+    }
+
+    #[test]
+    fn encode_matches_borsh() {
+        #[track_caller]
+        fn case(action: Action) {
+            let mut bytes = Vec::new();
+            action.encode(&mut bytes).unwrap();
+            let borsh_bytes = borsh::to_vec(&BorshAction {
+                version: action.version,
+                parent: action.parent,
+                payload: action.payload,
+            })
+            .unwrap();
+            assert_eq!(bytes, borsh_bytes);
+        }
+
+        // empty payload: length 0, no payload bytes
+        case(Action::new(0, None, vec![]));
+        // no parent: tag 0, nothing after it
+        case(Action::new(0, None, vec![1, 2, 3]));
+        // parent: tag 1, then 32 bytes
+        case(Action::new(0, Some(PARENT), vec![1, 2, 3]));
+        // length over 255: little-endian across two bytes
+        case(Action::new(0, None, vec![0; 0x0102]));
+        //alternate versions are not tested as not supported in our encoding - but supported in borsh
+    }
+
+    #[test]
+    fn encoding() {
+        #[track_caller]
+        fn case(action: Action, expected: &str) {
+            let mut bytes = Vec::new();
+            action.encode(&mut bytes).unwrap();
+            assert_eq!(hex::encode(&bytes), expected);
+            assert_eq!(Action::decode(&bytes).unwrap(), (action, &[][..]));
+        }
+
+        // empty payload: length 0, no payload bytes
+        case(Action::new(0, None, vec![]), "000000000000");
+        // no parent: tag 0, nothing after it
+        case(Action::new(0, None, vec![1, 2, 3]), "000003000000010203");
+        // parent: tag 1, then 32 bytes
+        case(
+            Action::new(0, Some(PARENT), vec![1, 2, 3]),
+            &format!("0001{}03000000010203", "07".repeat(32)),
+        );
+        // length over 255: little-endian across two bytes
+        case(
+            Action::new(0, None, vec![0; 0x0102]),
+            &format!("000002010000{}", "00".repeat(0x0102)),
+        );
+    }
+
+    #[test]
+    fn unsupported_version() {
+        for version in 1..=u8::MAX {
+            // A valid tail follows, so this shows decode stops at the version byte.
+            assert_matches!(
+                Action::decode(&[version, 0, 0, 0, 0, 0]),
+                Err(DecodeError::Unsupported)
+            );
+            assert_matches!(
+                Action::new(version, None, vec![]).encode(&mut Vec::new()),
+                Err(EncodeError::Unsupported)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_encode_leaves_out_untouched() {
+        // Start with bytes in `out`, so clearing them would also be caught.
+        let mut bytes = vec![0xff];
+        Action::new(1, None, vec![]).encode(&mut bytes).unwrap_err();
+        assert_eq!(bytes, [0xff]);
+    }
+
+    #[test]
+    fn too_large_payload() {
+        assert_matches!(
+            Action::new(0, None, vec![0; u32::MAX as usize + 1]).encode(&mut Vec::new()),
+            Err(EncodeError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn encode_appends() {
+        let mut bytes = vec![0xff];
+        Action::new(0, None, vec![1, 2, 3])
+            .encode(&mut bytes)
+            .unwrap();
+        assert_eq!(hex::encode(&bytes), "ff000003000000010203");
+    }
+
+    #[test]
+    fn invalid_parent_tag() {
+        for tag in 2..=u8::MAX {
+            assert_matches!(
+                Action::decode(&[0, tag, 0, 0, 0, 0]),
+                Err(DecodeError::Malformed)
+            );
+        }
+    }
+
+    #[test]
+    fn truncated() {
+        #[track_caller]
+        fn case(input: &str) {
+            assert_matches!(
+                Action::decode(&hex::decode(input).unwrap()),
+                Err(DecodeError::Malformed)
+            );
+        }
+
+        // no version
+        case("");
+        // no parent tag
+        case("00");
+        // parent one byte short
+        case(&format!("0001{}", "07".repeat(31)));
+        // parent present, no length
+        case(&format!("0001{}", "07".repeat(32)));
+        // length cut short (3 of 4 bytes)
+        case("0000030000");
+        // payload cut short (1 of 3 bytes)
+        case("00000300000001");
+        // length far past input: rejected, not allocated
+        case("0000ffffffff010203");
+    }
+
+    #[test]
+    fn trailing_bytes_are_returned() {
+        let input = hex::decode("000000000000ff").unwrap();
+        assert_eq!(
+            Action::decode(&input).unwrap(),
+            (Action::new(0, None, vec![]), &[0xff][..])
+        );
+    }
 }
